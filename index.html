@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ragdoll Box</title>
+<style>
+body { margin: 0; overflow: hidden; background: #111; font-family: sans-serif; }
+canvas { display: block; background: #222; touch-action: none; }
+.button-container {
+  position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 10px; z-index: 10;
+}
+button {
+  padding: 10px 20px; font-size: 16px; border: none;
+  background: #555; color: white; border-radius: 5px;
+}
+button:hover { background: #777; }
+#menu {
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  background: #333; padding: 20px; border-radius: 10px; display: none;
+  color: white; z-index: 20;
+}
+#menu button { display: block; margin: 10px 0; width: 100%; }
+#menu #closeMenu { background: #900; }
+#instructions {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: #222; color: #0ff; padding: 10px 20px; border-radius: 8px;
+  display: none; z-index: 20;
+}
+</style>
+</head>
+<body>
+<div class="button-container">
+  <button id="spawnBtn">Spawn Stickman</button>
+  <button id="removeBtn">Remove All</button>
+  <button id="toggleTrampolineBtn">Trampoline: On</button>
+  <button id="stickmanMenuBtn">Stickman Menu</button>
+  <button id="toggleBarBtn">Spinning Bar: Off</button>
+  <button id="toggleCrusherBtn">Crushing Wall: Off</button>
+</div>
+<canvas id="game"></canvas>
+
+<div id="menu">
+  <button data-color="white">White</button>
+  <button data-color="mediumblue">Medium Blue</button>
+  <button data-color="forestgreen">Forest Green</button>
+  <button id="instantKill">Instant Kill</button>
+  <button id="closeMenu">X</button>
+</div>
+<div id="instructions">Tap a Stickman to open menu</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script>
+const { Engine, Render, World, Bodies, Constraint, Mouse, MouseConstraint, Events, Body, Vector } = Matter;
+
+const engine = Engine.create();
+const world = engine.world;
+
+const canvas = document.getElementById('game');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const render = Render.create({
+  canvas: canvas,
+  engine: engine,
+  options: { wireframes: false, background: '#222', width: canvas.width, height: canvas.height }
+});
+Render.run(render);
+Engine.run(engine);
+
+// Ground & walls (all green)
+const wallColor = '#00ff00';
+const ground = Bodies.rectangle(canvas.width/2, canvas.height-50, canvas.width, 50, { isStatic:true, render:{fillStyle:wallColor} });
+const leftWall = Bodies.rectangle(-25,canvas.height/2,50,canvas.height,{isStatic:true, render:{fillStyle:wallColor}});
+const topWall = Bodies.rectangle(canvas.width/2,-25,canvas.width,50,{isStatic:true, render:{fillStyle:wallColor}});
+const bottomWall = Bodies.rectangle(canvas.width/2,canvas.height+25,canvas.width,50,{isStatic:true, render:{fillStyle:wallColor}});
+const rightWall = Bodies.rectangle(canvas.width+25,canvas.height/2,50,canvas.height,{isStatic:true, render:{fillStyle:wallColor}});
+World.add(world,[ground,leftWall,topWall,bottomWall,rightWall]);
+
+// Store original right wall X
+const rightWallOriginalX = canvas.width + 25;
+
+// Trampoline
+const trampolineY = canvas.height - 50 - 10 - 10;
+const trampoline = Bodies.rectangle(canvas.width/2,trampolineY,200,20,{ isStatic:true, render:{fillStyle:'#00f0ff'} });
+let trampolineEnabled = true;
+World.add(world,trampoline);
+
+// Spinning skinny bar
+const bar = Bodies.rectangle(100,200,120,10,{ isStatic:true, render:{fillStyle:'#f00'} });
+let barEnabled=false;
+World.add(world,bar);
+
+// Crushing wall toggle
+let crusherEnabled=false;
+const crusherSpeed = 1.0; // pixels per frame
+
+// Stickmen
+let stickmen=[];
+let selectedStickman=null;
+let stickmanMenuMode=false;
+
+function createStickman(x,y){
+  const head = Bodies.circle(x,y,15,{restitution:0.5,render:{fillStyle:'white'}});
+  const torso = Bodies.rectangle(x,y+40,10,40,{render:{fillStyle:'white'}});
+  const leftArm = Bodies.rectangle(x-25,y+20,40,10,{render:{fillStyle:'white'}});
+  const rightArm = Bodies.rectangle(x+25,y+20,40,10,{render:{fillStyle:'white'}});
+  const leftLeg = Bodies.rectangle(x-10,y+80,10,40,{render:{fillStyle:'white'}});
+  const rightLeg = Bodies.rectangle(x+10,y+80,10,40,{render:{fillStyle:'white'}});
+  const constraints = [
+    Constraint.create({bodyA:head,bodyB:torso,pointA:{x:0,y:15},pointB:{x:0,y:-20},stiffness:0.6}),
+    Constraint.create({bodyA:torso,bodyB:leftArm,pointA:{x:-5,y:-15},pointB:{x:20,y:0},stiffness:0.6}),
+    Constraint.create({bodyA:torso,bodyB:rightArm,pointA:{x:5,y:-15},pointB:{x:-20,y:0},stiffness:0.6}),
+    Constraint.create({bodyA:torso,bodyB:leftLeg,pointA:{x:-5,y:20},pointB:{x:0,y:-20},stiffness:0.6}),
+    Constraint.create({bodyA:torso,bodyB:rightLeg,pointA:{x:5,y:20},pointB:{x:0,y:-20},stiffness:0.6})
+  ];
+  const all=[head,torso,leftArm,rightArm,leftLeg,rightLeg,...constraints];
+  all.colorParts=[head,torso,leftArm,rightArm,leftLeg,rightLeg];
+  all._hitByBar=false; 
+  World.add(world,all);
+  stickmen.push(all);
+}
+
+// Spawn initial
+for(let i=0;i<2;i++) createStickman(200+i*150,100);
+
+// Mouse
+const mouse=Mouse.create(render.canvas);
+const mouseConstraint=MouseConstraint.create(engine,{mouse,constraint:{stiffness:0.2,render:{visible:false}}});
+World.add(world,mouseConstraint);
+render.mouse=mouse;
+
+// Buttons
+document.getElementById('spawnBtn').onclick=()=>createStickman(Math.random()*(canvas.width-100)+50,50);
+document.getElementById('removeBtn').onclick=()=>{ stickmen.forEach(g=>g.forEach(b=>World.remove(world,b))); stickmen=[]; };
+document.getElementById('toggleTrampolineBtn').onclick=()=>{
+  trampolineEnabled=!trampolineEnabled;
+  document.getElementById('toggleTrampolineBtn').innerText=`Trampoline: ${trampolineEnabled?'On':'Off'}`;
+  Body.setPosition(trampoline, trampolineEnabled?{x:canvas.width/2,y:trampolineY}:{x:-1000,y:-1000});
+};
+document.getElementById('stickmanMenuBtn').onclick=()=>{
+  stickmanMenuMode=true;
+  document.getElementById('instructions').style.display='block';
+  setTimeout(()=>document.getElementById('instructions').style.display='none',3000);
+};
+document.getElementById('toggleBarBtn').onclick=()=>{
+  barEnabled=!barEnabled;
+  document.getElementById('toggleBarBtn').innerText=`Spinning Bar: ${barEnabled?'On':'Off'}`;
+};
+document.getElementById('toggleCrusherBtn').onclick=()=>{
+  crusherEnabled=!crusherEnabled;
+  document.getElementById('toggleCrusherBtn').innerText=`Crushing Wall: ${crusherEnabled?'On':'Off'}`;
+  if(!crusherEnabled){
+    // Reset right wall position
+    Body.setPosition(rightWall, { x: rightWallOriginalX, y: canvas.height/2 });
+  }
+};
+
+// Trampoline bounce
+Events.on(engine,'collisionStart',e=>{
+  e.pairs.forEach(p=>{
+    if((p.bodyA===trampoline||p.bodyB===trampoline)&&trampolineEnabled){
+      const other=p.bodyA===trampoline?p.bodyB:p.bodyA;
+      if(!other.isStatic) Body.setVelocity(other,{x:other.velocity.x,y:-30});
+    }
+  });
+});
+
+// Spinning bar collision
+Events.on(engine,'beforeUpdate',()=>{
+  if(barEnabled) Body.setAngle(bar, bar.angle + 0.2);
+
+  stickmen.forEach(g=>{
+    const torso = g[1];
+    const dx = torso.position.x - bar.position.x;
+    const dy = torso.position.y - bar.position.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if(dist < 80 && !g._hitByBar){
+      g._hitByBar=true;
+      const dir = Vector.normalise({x: dx, y: dy});
+      Body.applyForce(torso, torso.position, Vector.mult(dir, 0.08));
+      Body.setAngularVelocity(torso, 1.5);
+      setTimeout(()=>{ g._hitByBar=false; }, 500);
+    }
+  });
+
+  // Move crusher wall left slowly
+  if(crusherEnabled){
+    Body.translate(rightWall,{x:-1,y:0});
+  }
+});
+
+// Tap menu (single tap)
+canvas.addEventListener('touchstart', e=>handleTap(e.touches[0].clientX,e.touches[0].clientY));
+canvas.addEventListener('mousedown', e=>handleTap(e.clientX,e.clientY));
+function handleTap(x,y){
+  if(!stickmanMenuMode) return;
+  const stickman=stickmen.find(g=>g.some(b=>x>=b.bounds.min.x && x<=b.bounds.max.x && y>=b.bounds.min.y && y<=b.bounds.max.y));
+  if(stickman){
+    selectedStickman=stickman;
+    document.getElementById('menu').style.display='block';
+    stickmanMenuMode=false;
+  }
+}
+
+// Menu buttons
+document.querySelectorAll('#menu button[data-color]').forEach(btn=>{
+  btn.onclick=()=>{ if(selectedStickman){ const color=btn.dataset.color; selectedStickman.colorParts.forEach(p=>p.render.fillStyle=color); } };
+});
+document.getElementById('instantKill').onclick=()=>{
+  if(!selectedStickman) return;
+  document.getElementById('menu').style.display='none';
+  const g=selectedStickman;
+  const interval=setInterval(()=>g.forEach(b=>Body.setAngularVelocity(b,2)),16);
+  setTimeout(()=>{ clearInterval(interval); g.forEach(b=>World.remove(world,b)); stickmen=stickmen.filter(s=>s!==g); },3000);
+};
+document.getElementById('closeMenu').onclick=()=>{ document.getElementById('menu').style.display='none'; selectedStickman=null; };
+
+// Resize
+window.addEventListener('resize',()=>{
+  canvas.width=window.innerWidth; canvas.height=window.innerHeight;
+  Render.lookAt(render,{min:{x:0,y:0},max:{x:canvas.width,y:canvas.height}});
+  Body.setPosition(trampoline, trampolineEnabled?{x:canvas.width/2,y:trampolineY}:{x:-1000,y:-1000});
+  Body.setPosition(leftWall,{x:-25,y:canvas.height/2});
+  Body.setPosition(topWall,{x:canvas.width/2,y:-25});
+  Body.setPosition(bottomWall,{x:canvas.width/2,y:canvas.height+25});
+  if(!crusherEnabled) Body.setPosition(rightWall,{x:rightWallOriginalX,y:canvas.height/2});
+});
+</script>
+</body>
+</html>
