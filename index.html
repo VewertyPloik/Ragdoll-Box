@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ragdoll Box</title>
+<style>
+body { margin: 0; overflow: hidden; background: #111; font-family: sans-serif; }
+canvas { display: block; background: #222; touch-action: none; }
+.button-container {
+  position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 10px; z-index: 10;
+  overflow-x: auto; white-space: nowrap; max-width: 95%;
+  padding-bottom: 5px;
+}
+button {
+  padding: 3.375px 6.75px; /* 1.5x bigger */
+  font-size: 8.1px;         /* 1.5x bigger */
+  border: none;
+  background: #555; color: white; border-radius: 5px;
+  flex-shrink: 0;
+}
+button:hover { background: #777; }
+#menu {
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  background: #333; padding: 20px; border-radius: 10px; display: none;
+  color: white; z-index: 20;
+}
+#menu button { display: block; margin: 10px 0; width: 100%; }
+#menu #closeMenu { background: #900; }
+#instructions {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: #222; color: #0ff; padding: 10px 20px; border-radius: 8px;
+  display: none; z-index: 20;
+}
+</style>
+</head>
+<body>
+<div class="button-container">
+  <button id="spawnBtn">Spawn Stickman</button>
+  <button id="removeBtn">Remove All</button>
+  <button id="toggleTrampolineBtn">Trampoline: On</button>
+  <button id="stickmanMenuBtn">Stickman Menu</button>
+  <button id="toggleBarBtn">Spinning Bar: Off</button>
+  <button id="toggleCrusherBtn">Crushing Wall: Off</button>
+  <button id="slowMoBtn">Slow-Mo: Off</button>
+  <button id="toggleTurretBtn">Water Turret: Off</button>
+  <button id="toggleMusicBtn">Music: Off</button>
+</div>
+<canvas id="game"></canvas>
+
+<div id="menu">
+  <button data-color="white">White</button>
+  <button data-color="mediumblue">Medium Blue</button>
+  <button data-color="forestgreen">Forest Green</button>
+  <button id="instantKill">Instant Kill</button>
+  <button id="closeMenu">X</button>
+</div>
+<div id="instructions">Tap a Stickman to open menu</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script>
+const { Engine, Render, World, Bodies, Constraint, Mouse, MouseConstraint, Events, Body, Vector } = Matter;
+
+const engine = Engine.create();
+const world = engine.world;
+
+const canvas = document.getElementById('game');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const render = Render.create({
+  canvas: canvas,
+  engine: engine,
+  options: { wireframes: false, background: '#222', width: canvas.width, height: canvas.height }
+});
+Render.run(render);
+Engine.run(engine);
+
+// Walls
+const wallColor = '#00ff00';
+const ground = Bodies.rectangle(canvas.width/2, canvas.height-50, canvas.width, 50, { isStatic:true, render:{fillStyle:wallColor} });
+const leftWall = Bodies.rectangle(-25,canvas.height/2,50,canvas.height,{isStatic:true, render:{fillStyle:wallColor}});
+const topWall = Bodies.rectangle(canvas.width/2,-25,canvas.width,50,{isStatic:true, render:{fillStyle:wallColor}});
+const bottomWall = Bodies.rectangle(canvas.width/2,canvas.height+25,canvas.width,50,{isStatic:true, render:{fillStyle:wallColor}});
+const rightWall = Bodies.rectangle(canvas.width+25,canvas.height/2,50,canvas.height,{isStatic:true, render:{fillStyle:wallColor}});
+World.add(world,[ground,leftWall,topWall,bottomWall,rightWall]);
+const rightWallOriginalX = canvas.width + 25;
+
+// Trampoline
+const trampolineY = canvas.height - 80;
+const trampoline = Bodies.rectangle(canvas.width/2,trampolineY,200,20,{ isStatic:true, render:{fillStyle:'#00f0ff'} });
+let trampolineEnabled = true;
+World.add(world,trampoline);
+
+// Spinning bar
+const bar = Bodies.rectangle(300,200,160,15,{ isStatic:true, render:{fillStyle:'#f00'} });
+let barEnabled=false;
+World.add(world,bar);
+
+// Crusher wall
+let crusherEnabled=false;
+
+// Slow motion
+let slowMo=false;
+
+// Stickmen
+let stickmen=[];
+let selectedStickman=null;
+let stickmanMenuMode=false;
+
+function createStickman(x,y){
+  const head = Bodies.circle(x,y,15,{restitution:0.5,render:{fillStyle:'white'}});
+  const torso = Bodies.rectangle(x,y+40,10,40,{render:{fillStyle:'white'}});
+  const leftArm = Bodies.rectangle(x-25,y+20,40,10,{render:{fillStyle:'white'}});
+  const rightArm = Bodies.rectangle(x+25,y+20,40,10,{render:{fillStyle:'white'}});
+  const leftLeg = Bodies.rectangle(x-10,y+80,10,40,{render:{fillStyle:'white'}});
+  const rightLeg = Bodies.rectangle(x+10,y+80,10,40,{render:{fillStyle:'white'}});
+  const constraints = [
+    Constraint.create({bodyA:head,bodyB:torso,pointA:{x:0,y:15},pointB:{x:0,y:-20},stiffness:0.6}),
+    Constraint.create({bodyA:torso,bodyB:leftArm,pointA:{x:-5,y:-15},pointB:{x:20,y:0},stiffness:0.6}),
+    Constraint.create({bodyA:torso,bodyB:rightArm,pointA:{x:5,y:-15},pointB:{x:-20,y:0},stiffness:0.6}),
+    Constraint.create({bodyA:torso,bodyB:leftLeg,pointA:{x:-5,y:20},pointB:{x:0,y:-20},stiffness:0.6}),
+    Constraint.create({bodyA:torso,bodyB:rightLeg,pointA:{x:5,y:20},pointB:{x:0,y:-20},stiffness:0.6})
+  ];
+  const all=[head,torso,leftArm,rightArm,leftLeg,rightLeg,...constraints];
+  all.colorParts=[head,torso,leftArm,rightArm,leftLeg,rightLeg];
+  all._hitByBar=false; 
+  World.add(world,all);
+  stickmen.push(all);
+}
+for(let i=0;i<2;i++) createStickman(200+i*150,100);
+
+// Mouse
+const mouse=Mouse.create(render.canvas);
+const mouseConstraint=MouseConstraint.create(engine,{mouse,constraint:{stiffness:0.8,render:{visible:false}}});
+World.add(world,mouseConstraint);
+render.mouse=mouse;
+
+Events.on(mouseConstraint,"mousedown",function(e){
+  if(!stickmanMenuMode) return;
+  const mousePos = e.mouse.position;
+  const stickman=stickmen.find(g=>g.some(b=>mousePos.x>=b.bounds.min.x && mousePos.x<=b.bounds.max.x && mousePos.y>=b.bounds.min.y && mousePos.y<=b.bounds.max.y));
+  if(stickman){
+    selectedStickman=stickman;
+    document.getElementById('menu').style.display='block';
+    stickmanMenuMode=false;
+  }
+});
+
+// Buttons
+document.getElementById('spawnBtn').onclick=()=>createStickman(Math.random()*(canvas.width-100)+50,50);
+document.getElementById('removeBtn').onclick=()=>{ stickmen.forEach(g=>g.forEach(b=>World.remove(world,b))); stickmen=[]; };
+document.getElementById('toggleTrampolineBtn').onclick=()=>{
+  trampolineEnabled=!trampolineEnabled;
+  document.getElementById('toggleTrampolineBtn').innerText=`Trampoline: ${trampolineEnabled?'On':'Off'}`;
+  Body.setPosition(trampoline, trampolineEnabled?{x:canvas.width/2,y:trampolineY}:{x:-1000,y:-1000});
+};
+document.getElementById('stickmanMenuBtn').onclick=()=>{
+  stickmanMenuMode=true;
+  document.getElementById('instructions').style.display='block';
+  setTimeout(()=>document.getElementById('instructions').style.display='none',3000);
+};
+document.getElementById('toggleBarBtn').onclick=()=>{
+  barEnabled=!barEnabled;
+  document.getElementById('toggleBarBtn').innerText=`Spinning Bar: ${barEnabled?'On':'Off'}`;
+};
+document.getElementById('toggleCrusherBtn').onclick=()=>{
+  crusherEnabled=!crusherEnabled;
+  document.getElementById('toggleCrusherBtn').innerText=`Crushing Wall: ${crusherEnabled?'On':'Off'}`;
+  if(!crusherEnabled){ Body.setPosition(rightWall, { x: rightWallOriginalX, y: canvas.height/2 }); }
+};
+document.getElementById('slowMoBtn').onclick=()=>{
+  slowMo=!slowMo;
+  engine.timing.timeScale=slowMo?0.2:1;
+  document.getElementById('slowMoBtn').innerText=`Slow-Mo: ${slowMo?'On':'Off'}`;
+};
+
+// Water Turret
+let turret = Bodies.rectangle(80, 80, 60, 20, { isStatic: true, render: { fillStyle: 'cyan' } });
+let turretAngle = 0;
+let turretActive = false;
+World.add(world, turret);
+turret.render.visible = false;
+document.getElementById('toggleTurretBtn').onclick = () => {
+  turretActive = !turretActive;
+  turret.render.visible = turretActive;
+  document.getElementById('toggleTurretBtn').innerText = `Water Turret: ${turretActive?'On':'Off'}`;
+};
+let lastAngle=null;
+canvas.addEventListener('touchmove',e=>{
+  if(!turret || !turretActive) return;
+  if(e.touches.length===1){
+    const touch=e.touches[0];
+    const dx=touch.clientX - turret.position.x;
+    const dy=touch.clientY - turret.position.y;
+    const angle=Math.atan2(dy,dx);
+    if(lastAngle===null){ lastAngle=angle; return; }
+    const delta=angle-lastAngle;
+    turretAngle+=delta*1.2;
+    Body.setAngle(turret,turretAngle);
+    lastAngle=angle;
+  }
+});
+canvas.addEventListener('touchend',()=>{ lastAngle=null; });
+setInterval(()=>{
+  if(!turretActive) return;
+  const length=40;
+  const tip={x:turret.position.x+Math.cos(turretAngle)*length,y:turret.position.y+Math.sin(turretAngle)*length};
+  const bullet=Bodies.circle(tip.x,tip.y,5,{density:0.001,render:{fillStyle:'cyan'}});
+  Body.setVelocity(bullet,{x:Math.cos(turretAngle)*15,y:Math.sin(turretAngle)*15});
+  World.add(world,bullet);
+  setTimeout(()=>World.remove(world,bullet),3000);
+},800);
+Events.on(engine,'collisionStart',e=>{
+  e.pairs.forEach(p=>{
+    if(turretActive && (p.bodyA.render.fillStyle==='cyan'||p.bodyB.render.fillStyle==='cyan')){
+      let other=p.bodyA.render.fillStyle==='cyan'?p.bodyB:p.bodyA;
+      if(!other.isStatic) other.render.fillStyle='lightblue';
+    }
+  });
+});
+
+// Trampoline bounce
+Events.on(engine,'collisionStart',e=>{
+  e.pairs.forEach(p=>{
+    if((p.bodyA===trampoline||p.bodyB===trampoline)&&trampolineEnabled){
+      const other=p.bodyA===trampoline?p.bodyB:p.bodyA;
+      if(!other.isStatic) Body.setVelocity(other,{x:other.velocity.x,y:-30});
+    }
+  });
+});
+
+// Game loop
+Events.on(engine,'beforeUpdate',()=>{
+  if(barEnabled){ Body.setAngle(bar, bar.angle + 0.2); }
+  stickmen.forEach(g=>{
+    const torso = g[1];
+    const dx = torso.position.x - bar.position.x;
+    const dy = torso.position.y - bar.position.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if(barEnabled && dist < 80 && !g._hitByBar){
+      g._hitByBar=true;
+      const dir = Vector.normalise({x: dx, y: dy});
+      Body.applyForce(torso, torso.position, Vector.mult(dir, 0.08));
+      Body.setAngularVelocity(torso, 1.5);
+      setTimeout(()=>{ g._hitByBar=false; }, 500);
+    }
+  });
+  if(crusherEnabled){ Body.translate(rightWall,{x:-1,y:0}); }
+});
+
+// Menu
+document.querySelectorAll('#menu button[data-color]').forEach(btn=>{
+  btn.onclick=()=>{ if(selectedStickman){ const color=btn.dataset.color; selectedStickman.colorParts.forEach(p=>p.render.fillStyle=color); } };
+});
+document.getElementById('instantKill').onclick=()=>{
+  if(!selectedStickman) return;
+  document.getElementById('menu').style.display='none';
+  const g=selectedStickman;
+  const interval=setInterval(()=>g.forEach(b=>Body.setAngularVelocity(b,2)),16);
+  setTimeout(()=>{ clearInterval(interval); g.forEach(b=>World.remove(world,b)); stickmen=stickmen.filter(s=>s!==g); },3000);
+};
+document.getElementById('closeMenu').onclick=()=>{ document.getElementById('menu').style.display='none'; selectedStickman=null; };
+
+// ---------------------- Music ----------------------
+let audioCtx = null;
+let isMusicOn = false;
+let musicInterval = null;
+function startMusic() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const bpm = 150;
+  const beatTime = 60 / bpm;
+  let step = 0;
+  musicInterval = setInterval(() => {
+    if (!isMusicOn) return;
+    const t = audioCtx.currentTime;
+    // Kick
+    if (step % 2 === 0) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(150, t);
+      osc.frequency.exponentialRampToValueAtTime(50, t + 0.15);
+      gain.gain.setValueAtTime(1, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t); osc.stop(t + 0.2);
+    }
+    // Snare
+    if (step % 4 === 2) {
+      const noise = audioCtx.createBufferSource();
+      const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.2, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      noise.buffer = buffer;
+      const noiseFilter = audioCtx.createBiquadFilter();
+      noiseFilter.type = 'highpass';
+      noiseFilter.frequency.value = 1000;
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0.5, t);
+      gain.gain.exponentialRampToValueAtTime(0.01, t + 0.15);
+      noise.connect(noiseFilter).connect(gain).connect(audioCtx.destination);
+      noise.start(t); noise.stop(t + 0.15);
+    }
+    // Bassline
+    if (step % 4 === 0) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'square';
+      const notes = [55, 65, 73, 82];
+      const note = notes[(step / 4) % notes.length];
+      osc.frequency.value = note;
+      gain.gain.setValueAtTime(0.2, t);
+      gain.gain.exponentialRampToValueAtTime(0.01, t + beatTime * 0.8);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t); osc.stop(t + beatTime);
+    }
+    step++;
+  }, beatTime * 1000);
+}
+function stopMusic() { if (musicInterval) { clearInterval(musicInterval); musicInterval = null; } }
+document.getElementById("toggleMusicBtn").onclick = () => {
+  isMusicOn = !isMusicOn;
+  if (isMusicOn) startMusic(); else stopMusic();
+  document.getElementById("toggleMusicBtn").innerText = `Music: ${isMusicOn ? "On" : "Off"}`;
+};
+</script>
+</body>
+</html>
